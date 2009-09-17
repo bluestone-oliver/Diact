@@ -1,0 +1,19 @@
+; $Id: diact.info, v 0.1 2009/09/14 22:19:32 mrstocks Exp $
+name = diact 
+description = Theme for DIACT by Bluestone.
+regions[left] = Left sidebar
+regions[right] = Right sidebar
+features[] = logo
+features[] = favicon
+features[] = name
+features[] = slogan
+stylesheets[all][] = style.css
+stylesheets[all][] = common.css
+version = VERSION
+core = 6.x
+
+; Information added by drupal.org packaging script on 2009-07-01
+version = "6.13"
+project = "drupal"
+datestamp = "1246481719"
+

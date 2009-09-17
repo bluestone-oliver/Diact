@@ -1,0 +1,28 @@
+; $Id: aBeesParadise.info,v 1.2 2009/06/17 14:40:18 interfacewebdesign Exp $
+name = aBeesParadise
+description = Tableless, multi-column, fixed width theme.
+version = VERSION
+core = 6.x
+engine = phptemplate
+stylesheets[all][] = style.css
+stylesheets[print][] = print.css
+
+; Information added by drupal.org packaging script on 2008-06-10
+version = "6.2"
+project = "drupal"
+datestamp = "1207776008"
+
+
+; Information added by drupal.org packaging script on 2008-07-01
+version = "6.x-1.x-dev"
+core = "6.x"
+project = "aBeesParadise"
+datestamp = "1214913605"
+
+
+; Information added by drupal.org packaging script on 2009-06-18
+version = "6.x-1.x-dev"
+core = "6.x"
+project = "aBeesParadise"
+datestamp = "1245283217"
+

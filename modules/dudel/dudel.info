@@ -1,0 +1,12 @@
+; $Id: dudel.info,v 1.1 2009/04/01 09:04:42 zeropaper Exp $
+name = Dudel
+description = Doodle like date choice feature.
+package = Other
+core = 6.x
+dependencies[] = date
+; Information added by drupal.org packaging script on 2009-04-22
+version = "6.x-1.x-dev"
+core = "6.x"
+project = "dudel"
+datestamp = "1240402264"
+

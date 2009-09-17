@@ -1,0 +1,455 @@
+<?php
+// $id$
+/*
+Copyright 2009 softgarden GmbH, Valentin Vago (a.k.a. zeropaper)
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+/**
+ * @file The Dudel module allows registered users to pick dates to determine the
+ * best moment for a meeting (like doodle does)
+ */
+
+/**
+ * Implements hook_perm()
+ * @return array
+ */
+function dudel_perm() {
+  return array(
+    'answer dudel forms'
+  );
+}
+
+/**
+ * Implements hook_menu()
+ * @return array
+ */
+function dudel_menu() {
+  $items = array();
+  
+  $items['node/%node/dudel-js'] = array(
+    'type' => MENU_CALLBACK,
+    'page callback' => 'dudel_js',
+    'page arguments' => array(1),
+    'access callback' => 'node_access',
+    'access arguments' => array('view', 1),
+  );
+  
+  return $items;
+}
+
+/**
+ * Callback for AJAX/AHAH submission
+ * Not yet working
+ */
+function dudel_js($node) {
+  $dbg = array();
+  $output = '';
+  if (!user_access('answer dudel forms')) {
+    drupal_set_message(t('You do not have the permission to pick a date.'), 'error');
+  }
+  else {
+    // The form is generated in an include file which we need to include manually.
+    module_load_include('inc', 'node', 'node.pages');
+    
+    $form_state = array('storage' => NULL, 'submitted' => FALSE);
+    $form_build_id = $_POST['form_build_id'];
+  
+    // Get the form from the cache.
+    $form = form_get_cache($form_build_id, $form_state);
+    $args = $form['#parameters'];
+    $form_id = array_shift($args);
+    // We will run some of the submit handlers so we need to disable redirecting.
+    $form['#redirect'] = FALSE;
+    // We need to process the form, prepare for that by setting a few internals
+    // variables.
+    $form['#programmed'] = FALSE;
+    $form['#post'] = $_POST;
+    $form_state['post'] = $_POST;
+    
+    
+    $form_state['values'] = (array)$form_state['values'];
+    $form_state['values'] += $form_state['post'];
+    
+    
+    // Step #5.
+    drupal_process_form($form_id, $form, $form_state);
+    // Step #6 and #7 and #8.
+    $form = drupal_rebuild_form($form_id, $form_state, $args, $form_build_id);
+    // Step #9.
+    unset($form['#prefix'], $form['#suffix']);
+    $form['#theme'] = 'dudel_form';
+    // Final rendering callback.
+    $output = drupal_render($form);
+  }// end form mechanism handling
+  
+//  $javascript = drupal_add_js(NULL, NULL, 'header');
+  
+//  $error_messages = '';
+//  $errors = drupal_get_messages('error', FALSE);
+//  if (!empty($errors)) {
+//    $error_messages = theme('status_messages', 'error');
+//  }
+  
+  
+  drupal_json(array(
+    'status' => empty($error_messages),
+    'debug' => $dbg,
+//    'messages' => $error_messages,
+    'messages' => theme('status_messages'),
+    'data' => $output,
+//    'settings' => call_user_func_array('array_merge_recursive', $javascript['setting'])
+  ));
+}
+
+/**
+ * Implements hook_form_alter()
+ *
+ * @param array $form
+ * @param array $form_state
+ * @param string $form_id
+ */
+function dudel_form_alter(&$form, $form_state, $form_id) {
+  if ($form_id == 'node_type_form') {
+    $form += dudel_node_type_form($form['#node_type']->type);
+  }
+}
+
+/**
+ * Add settings to the node type form
+ *
+ * @param string $node_type
+ *  The type of the node this form is made for
+ * @return array
+ *  A FAPI array
+ */
+function dudel_node_type_form($node_type) {
+  $fields = content_types($node_type);
+  $form = array();
+  if (is_array($fields['fields']) && !empty($fields['fields'])) {
+    $fields = $fields['fields'];
+  
+    $date_fields = array('' => t('<none>'));
+    foreach ($fields as $name => $field) {
+      if (substr($field['type'], 0, strlen('date')) == 'date') {
+        $date_fields[$name] = $field['widget']['label'];
+      }
+    }
+    
+    $form['dudel'] = array(
+      '#type' => 'fieldset',
+      '#title' => t('Dudel'),
+      '#collapsible' => TRUE,
+      '#collapsed' => TRUE,
+    );
+    $form['dudel']['dudel_date_field_name'] = array(
+      '#type' => 'select',
+      '#options' => $date_fields,
+      '#default_value' => dudel_date_field_name($node_type),
+    );
+  }
+  return $form;
+}
+
+/**
+ * Implements hook_nodeapi()
+ *
+ * @param object $node
+ * @param string $op
+ * @param mixed $a3
+ * @param mixed $a4
+ */
+function dudel_nodeapi(&$node, $op, $a3 = NULL, $a4 = NULL) {
+  if (dudel_date_field_name($node->type)) {
+    if ($op == 'load') {
+      $node->dudel_records = dudel_load($node);
+    }
+    elseif ($op == 'view') {
+      $node->content['dudel'] = array(
+        '#title' => t('Choose a date'),
+        '#value' => drupal_get_form('dudel_form', $node),
+      );
+    }
+  }
+}
+
+/**
+ * Loads the records for a dudel form
+ *
+ * @param object $node
+ * @param mixed $users
+ * @return array
+ */
+function dudel_load($node, $users = NULL) {
+  // @todo static caching
+  
+  $sql = "SELECT delta, uid FROM {dudel} WHERE nid=%d";
+  $args = array($node->nid);
+  
+  if (!empty($users)) {
+    if (is_array($users)) {
+      $uids = array();
+      foreach ($users as $account) {
+        if (is_object($account)) {
+          $args[] = $account->uid;
+          $uids[] = 'uid=%d';
+        }
+        elseif (is_numeric($account)) {
+          $args[] = $account;
+          $uids[] = 'uid=%d';
+        }
+      }
+      $sql .= ' AND ('. implode(' OR ', $uids) .')';
+    }
+    elseif (is_object($users)) {
+      $sql .= ' AND uid=%d';
+      $args[] = $users->uid;
+    }
+  }
+  
+  $sql .= ' ORDER BY uid';
+  $query = db_query($sql, $args);
+  while ($delta = db_fetch_object($query)) {
+    $deltas[$delta->uid][] = $delta->delta;
+  }
+  
+  return $deltas;
+}
+
+function _dudel_ahah_wrapper_id($node) {
+  return 'dudel-table-wrapper-'. $node->nid;
+}
+
+/**
+ * Function that generates the dudel form available in the node view.
+ *
+ * @param array $form_state
+ * @param object $node
+ * @return array
+ *  A FAPI array
+ */
+function dudel_form(&$form_state, $node) {
+  
+  if (user_is_anonymous()) {
+    $register = variable_get('user_register', 0) ? ' '.t('or') .' '. l('register', 'user/register') : '';
+    return array('#value' => t('You have to !login !register to choose convenient dates.', array(
+      '!login' => l(t('login'), 'user'),
+      '!register' => $register
+    )));
+  }
+  
+  global $user;
+  if (isset($form_state['node'])) {
+    $node = $form_state['node'] + (array)$node;
+  }
+  
+  $records = $node->dudel_records;
+  $button_label = t('Save');
+  
+  
+  $form = array(
+//    '#parameters' => array('dudel_form', $node),
+    '#prefix' => '<div id="'. _dudel_ahah_wrapper_id($node) .'">',
+    '#suffix' => '</div>',
+    '#dudel_dates' => array(),
+    '#dudel_choices' => array(),
+    '#cache' => TRUE,
+  );
+  $options = array();
+  $default_value = array();
+
+  $field = dudel_date_field_info($node->type);
+  if (isset($field['field_name']) && isset($node->{$field['field_name']})) {
+    foreach ($node->{$field['field_name']} as $delta => $item) {
+      $date = date_make_date($item['value'], $item['timezone_db'], $item['date_type']);
+      date_timezone_set($date, timezone_open($item['timezone']));
+      
+      $form['#dudel_timezone'] = timezone_open($item['timezone']);
+      $form['#dudel_dates'][$delta] = $date;
+      $form['#dudel_grouped_dates'][date_format_date($date, 'custom', 'd.m.Y')][] = date_format_date($date, 'custom', 'H:i');
+      
+      // we can not use numerical keys in checkboxes starting at 0, so let's
+      $options[($delta +1)] = date_format_date($date, 'custom', 'd.m.Y H:i');
+      
+      if (is_array($records)) {
+        foreach ($records as $ouid => $other_user_record) {
+          if ($user->uid != $ouid) {
+            $form['#dudel_choices'][$ouid][$delta] = in_array($delta, $other_user_record);
+          }
+          else {
+            $default_value[($delta +1)] = in_array($delta, $other_user_record) ? ($delta +1) : 0;
+            if ($default_value[($delta +1)]) {
+              $button_label = t('Update');
+            }
+          }
+        }
+      }
+    }
+  }
+  
+  $form['nid'] = array('#type' => 'hidden', '#value' => $node->nid);
+  
+  $form['dates'] = array(
+    '#type' => 'checkboxes',
+    '#title' => t('Pick one or more dates'),
+    '#options' => $options,
+    '#return_value' => 'yes',
+    '#default_value' => $default_value
+  );
+  
+  $form['submit'] = array(
+    '#type' => 'submit',
+    '#value' => $button_label,
+  );
+  
+  
+  return $form;
+}
+
+
+/**
+ * Callback function for dudel_form()
+ *
+ * @param array $form
+ * @param array $form_state
+ */
+function dudel_form_submit($form, &$form_state) {
+  global $user;
+  $errors = 0;
+  $values = $form_state['values'];
+  db_query("DELETE FROM {dudel} WHERE nid=%d AND uid=%d", $values['nid'], $user->uid);
+  foreach ($values['dates'] as $delta => $checked) {
+    if ($delta == $checked) {
+      if(!db_query("INSERT INTO {dudel} (nid, uid, delta) VALUES (%d, %d, %d)", $values['nid'], $user->uid, ($delta -1))) {
+        $errors++;
+      }
+    }
+  }
+  if (!$errors) {
+    drupal_set_message(t('Your choice(s) have been saved.'));
+  }
+  else {
+    drupal_set_message(t('An error occured.'), 'error');
+  }
+}
+
+
+/**
+ * Implements hook_theme()
+ *
+ * @param unknown_type $existing
+ * @param unknown_type $type
+ * @param unknown_type $theme
+ * @param unknown_type $path
+ * @return array
+ */
+function dudel_theme($existing, $type, $theme, $path) {
+  return array(
+    'dudel_form' => array(
+      'arguments' => array(
+        'form' => NULL
+      ),
+    ),
+  );
+}
+
+/**
+ * Theme function for  the dudel form
+ * @param $form
+ * @return unknown_type
+ */
+function theme_dudel_form($form) {
+  static $js_added = FALSE;
+  if (is_array($form['#dudel_choices'])) {
+    drupal_add_css(drupal_get_path('module', 'dudel') .'/dudel.css');
+    // Javascript is not yet done
+    drupal_add_js(drupal_get_path('module', 'dudel') .'/dudel.js');
+    if (!$js_added) {
+      drupal_add_js(array('dudel' => array('path' => url('node'))), 'setting');
+      $js_added = TRUE;
+    }
+    
+    global $user;
+    unset($form['dates']['#title']);
+    
+    $output = '';
+    $header = array('');// we start with an empty cell
+    
+    $last_row = array(t('You') . drupal_render($form['submit']));
+    $rows = array();
+    
+    $yes_no = array('no', 'yes');
+    
+    // We do the headers (day & time rows) part first...
+    $row = array('');
+    foreach ($form['#dudel_grouped_dates'] as $day => $hours) {
+      $header[] = array(
+        'data' => $day,
+        'colspan' => count($hours)
+      );
+      $row = array_merge($row, $hours);
+    }
+    $rows[] = $row;
+    
+    // ...the "form" / "checkboxes"...
+    foreach (element_children($form['dates']) as $delta) {
+      unset($form['dates'][$delta]['#title']);
+      $last_row[] = drupal_render($form['dates'][$delta]);
+    }
+    
+    // ...and the records found
+    foreach ($form['#dudel_choices'] as $ouid => $choices) {
+      if ($ouid != $user->uid) {
+        $row = array(theme('username', user_load($ouid)));
+        foreach ($choices as $choice) {
+          $row[] = array(
+            'class' => 'dudel-'. $yes_no[$choice],
+            'data' => t($yes_no[$choice])
+          );
+        }
+        $rows[] = $row;
+      }
+    }
+    // adding the last row (the one with checkboxes)
+    $rows[] = array('class' => 'user-changeable', 'data' => $last_row);
+    
+    $output .= theme('table', $header, $rows, array('class' => 'dudel-table'));
+  }
+  return $output . drupal_render($form);
+}
+
+/**
+ * Helper function used to retrieve the CCK field used for the dudel form.
+ *
+ * @param string $node_type
+ * @return mixed
+ *  The string name of the CCK field or FALSE
+ */
+function dudel_date_field_name($node_type) {
+  return variable_get('dudel_date_field_name_'. $node_type, FALSE);
+}
+
+/**
+ * Helper function used to retrieve the CCK field description / information
+ *
+ * @param string $node_type
+ * @return array
+ *  Normally, this function should return an array... normally :)
+ */
+function dudel_date_field_info($node_type) {
+  $fields = content_types($node_type);
+  $field_name = dudel_date_field_name($node_type);
+  return $fields['fields'][$field_name];
+}
